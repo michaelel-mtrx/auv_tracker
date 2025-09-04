@@ -1,0 +1,21 @@
+# pyproject.toml
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auv-tracker"
+version = "0.1.0"
+description = "AUV tracker (Flask + SSE + Leaflet) with a minimal Python API."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["Flask==3.0.3"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["auv_tracker", "auv_tracker.*"]
+
+[tool.setuptools.package-data]
+auv_tracker = ["static/*", "static/**/*"]

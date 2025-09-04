@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Airplane Live Tracker</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    html, body, #map { height: 100%; margin: 0; padding: 0; }
+    .control {
+      position: absolute; top: 10px; left: 10px; z-index: 1000;
+      background: rgba(255,255,255,0.9); padding: 8px 12px; border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15); font-family: system-ui, sans-serif;
+    }
+    .stats { font-size: 13px; margin-top: 6px; line-height: 1.3; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="control">
+    <label>
+      <input id="followToggle" type="checkbox" />
+      Follow aircraft
+    </label>
+    <div class="stats">
+      <div>Lat: <span id="lat">–</span></div>
+      <div>Lon: <span id="lon">–</span></div>
+      <div>Alt: <span id="alt">–</span> m</div>
+      <div>Heading: <span id="heading">–</span>°</div>
+      <div>Time: <span id="time">–</span></div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Rotated marker plugin -->
+  <script src="https://cdn.jsdelivr.net/npm/leaflet-rotatedmarker@0.2.0/leaflet.rotatedMarker.min.js"></script>
+
+  <script>
+    // Init map with OSM tiles (free)
+    const map = L.map('map', {
+      zoomControl: true,
+      worldCopyJump: false,
+    }).setView([32.0853, 34.7818], 8); // Default: Tel Aviv area
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Plane icon
+    const planeIcon = L.icon({
+      iconUrl: '/static/plane.svg',
+      iconSize: [48, 48],
+      iconAnchor: [24, 24], // center
+    });
+
+    let plane = null;
+    // Marker with rotation support (via plugin)
+    //const plane = L.marker([32.0853, 34.7818], {
+    //  icon: planeIcon,
+    //  rotationAngle: 0,
+    //  rotationOrigin: 'center center'
+    //}).addTo(map);
+
+    // Polyline trail (optional)
+    const trail = L.polyline([], { weight: 2 }).addTo(map);
+
+    const followEl = document.getElementById('followToggle');
+    const latEl = document.getElementById('lat');
+    const lonEl = document.getElementById('lon');
+    const altEl = document.getElementById('alt');
+    const hdgEl = document.getElementById('heading');
+    const timeEl = document.getElementById('time');
+
+    const mission = L.polyline([], { weight: 4 }).addTo(map);
+
+    let targetDot = null;
+    let targetArea = null;
+    const TARGET_RADIUS_M = 200;  
+
+    function updateStats(p) {
+      latEl.textContent = p.lat.toFixed(6);
+      lonEl.textContent = p.lon.toFixed(6);
+      altEl.textContent = Math.round(p.alt);
+      hdgEl.textContent = (p.heading !== null && p.heading !== undefined) ? Math.round(p.heading) : '–';
+      timeEl.textContent = p.timestamp || '–';
+    }
+
+    // Auto-follow behavior: keep map centered on plane when enabled
+    function maybeFollow(lat, lon) {
+      if (followEl.checked) {
+        const currentZoom = map.getZoom();
+        map.setView([lat, lon], currentZoom, { animate: false });
+      }
+    }
+
+    // SSE stream
+    const es = new EventSource('/stream');
+    es.onmessage = (evt) => {
+      try {
+        const s = JSON.parse(evt.data);
+        const p = s.auv;
+        if (p) {
+          if (!plane) {
+            plane = L.marker([p.lat, p.lon], {
+              icon: planeIcon,
+              rotationAngle: 0,
+              rotationOrigin: 'center center'
+            }).addTo(map);
+          } 
+          else {
+            plane.setLatLng([p.lat, p.lon]);
+          }
+          if (typeof p.heading === 'number' && plane && plane.setRotationAngle) {
+            plane.setRotationAngle(p.heading);
+          }
+          trail.addLatLng([p.lat, p.lon]);
+          updateStats(p);
+          maybeFollow(p.lat, p.lon);
+        }
+        
+        const latlngs = Array.isArray(s.path) ? s.path.map(pt => [pt.lat, pt.lon]) : [];
+        mission.setLatLngs(latlngs);
+
+        // Draw target (dot + translucent radius)
+        const t = s.target;
+        if (t && typeof t.lat === 'number' && typeof t.lon === 'number') {
+          const ll = [t.lat, t.lon];
+          const r = (typeof t.radius_m === 'number' && t.radius_m >= 0) ? t.radius_m : TARGET_RADIUS_M;
+
+          const dotStyle  = { radius: 5, weight: 2, color: '#e03131', fillColor: '#e03131', fillOpacity: 1 };
+          const areaStyle = { radius: r, weight: 2, color: '#e03131', opacity: 0.6, fillColor: '#e03131', fillOpacity: 0.12 };
+
+          if (!targetDot) {
+            targetDot = L.circleMarker(ll, dotStyle).addTo(map);
+          } else {
+            targetDot.setLatLng(ll);
+            targetDot.setStyle(dotStyle);
+          }
+
+          if (!targetArea) {
+            targetArea = L.circle(ll, areaStyle).addTo(map);
+          } else {
+            targetArea.setLatLng(ll);
+            targetArea.setRadius(r);
+            targetArea.setStyle(areaStyle);
+          }
+        }
+        else {
+          if (targetDot)  { map.removeLayer(targetDot);  targetDot  = null; }
+          if (targetArea) { map.removeLayer(targetArea); targetArea = null; }
+        }
+      } catch (e) {
+        console.error('Bad event data', e);
+      }
+    };
+  </script>
+</body>
+</html>
